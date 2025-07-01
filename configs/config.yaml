@@ -1,0 +1,23 @@
+# Logging configurations
+# Logging configuration
+logging:
+  level: "INFO"  # Logging level (e.g., DEBUG, INFO, WARNING, ERROR, CRITICAL)
+  format: "%(asctime)s - %(levelname)s - %(message)s"  # Log format
+  file: null  # Set to logs/app.log for File handler logging; null to disable file logging
+
+LOG_LEVEL: INFO
+LOG_FILE_PATH: null   # Set to logs/app.log for File handler logging
+
+# Model identifiers
+IMG_CLASS_MODEL_CKPT: "artifacts/image_classification_model/"  # "linkanjarad/mobilenet_v2_1.0_224-plant-disease-identification"
+IMG_VAL_MODEL_CKPT: "artifacts/image_validation_model/binary_leaf_classifier.pth"
+
+# prediction input
+IMAGE_URL: null
+INPUT_FILE_PATH: pred
+
+# Image preprocessing configuration
+image_preprocessing:
+  resize: [224, 224]  # Resize image to 224x224
+  mean: [0.485, 0.456, 0.406]  # Normalization mean
+  std: [0.229, 0.224, 0.225]   # Normalization standard deviation
