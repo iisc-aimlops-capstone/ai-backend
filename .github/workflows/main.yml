@@ -1,0 +1,42 @@
+name: Deploy FastAPI to ECS Fargate
+
+on:
+  push:
+    branches: [ main ]  # or your preferred branch
+
+env:
+  AWS_REGION: us-east-2
+  ECR_REPOSITORY: 671336841184.dkr.ecr.us-east-2.amazonaws.com/ecr-iisc-aimlops-cap-be-fastapi
+  ECS_CLUSTER: ecs-cluster-iisc-aimlops-cap-be-fastapi
+  ECS_SERVICE: ecs-cluster-iisc-aimlops-cap-be-fastapi-service
+  TASK_DEF_FAMILY: ecs-cluster-iisc-aimlops-cap-be-fastapi-task
+  CONTAINER_NAME: ecs-cluster-iisc-aimlops-cap-be-fastapi-container
+
+jobs:
+  deploy:
+    name: Build, Push to ECR, Deploy to ECS
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v3
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        role-to-assume: arn:aws:iam::671336841184:role/iar-github-oidc
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
+
+    - name: Build and Push Docker Image to ECR
+      run: |
+        IMAGE_TAG=latest
+        docker build -t $ECR_REPOSITORY:$IMAGE_TAG .
+        docker push $ECR_REPOSITORY:$IMAGE_TAG
