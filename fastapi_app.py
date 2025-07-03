@@ -95,6 +95,27 @@ def download_from_s3(bucket_name: str, file_key: str, local_path: str) -> bool:
         logger.error(f"Unexpected error downloading from S3: {e}")
         return False
 
+def delete_from_s3(bucket_name: str, file_key: str) -> bool:
+    """
+    Delete a file from S3.
+    Args:
+        bucket_name (str): Name of the S3 bucket
+        file_key (str): Key of the file in S3
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        s3_client.delete_object(Bucket=bucket_name, Key=file_key)
+        logger.info(f"Successfully deleted {file_key} from S3 bucket {bucket_name}")
+        return True
+    except ClientError as e:
+        logger.error(f"ClientError deleting from S3: {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Unexpected error deleting from S3: {e}")
+        return False
+
+
 @app.post("/analyze_from_s3/", response_model=ValidationResult, summary="Analyze image from S3")
 async def analyze_image_from_s3(request: S3ImageRequest):
     """
@@ -172,9 +193,13 @@ async def analyze_image_from_s3(request: S3ImageRequest):
                     os.unlink(temp_file_path)
                 # Optionally clean up the local file as well
                 if os.path.exists(local_file_path):
-                    os.unlink(local_file_path)
+                    os.remove(local_file_path)
             except Exception as e:
                 logger.warning(f"Failed to clean up temporary files: {e}")
+            # Delete from S3 after processing
+            delete_from_s3(S3_BUCKET_NAME, request.file_key)
+            # Ensure pred folder exists after cleanup
+            os.makedirs(configs['INPUT_FILE_PATH'], exist_ok=True)
                 
     except HTTPException:
         # Re-raise HTTP exceptions
@@ -219,8 +244,14 @@ async def validate_and_classify_images(files: List[UploadFile] = File(..., descr
                 continue
 
             if not is_plant:
-                import shutil
-                shutil.rmtree(img_path)
+                if os.path.isfile(img_path):
+                    os.remove(img_path)
+                elif os.path.isdir(img_path):
+                # Only remove files inside, not the folder itself
+                    for f in os.listdir(img_path):
+                        file_path = os.path.join(img_path, f)
+                        if os.path.isfile(file_path):
+                            os.remove(file_path)
                 results.append(ValidationResult(
                     filename=file.filename,
                     image="processed",
@@ -254,7 +285,7 @@ async def validate_and_classify_images(files: List[UploadFile] = File(..., descr
                 confidence=prediction_results.get('confidence', 0.0),
                 message="Image is valid and classified successfully."
             ))
-            
+        os.makedirs(configs['INPUT_FILE_PATH'], exist_ok=True)
         return results
 
     except Exception as e:
