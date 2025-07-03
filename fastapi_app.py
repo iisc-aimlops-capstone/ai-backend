@@ -132,7 +132,7 @@ async def analyze_image_from_s3(request: S3ImageRequest):
             
             # Validate if the image contains a plant
             try:
-                is_plant, label, is_plant_confidence = validate_data()
+                is_plant, label, is_plant_confidence, img_path = validate_data()
                 logger.info(f"Plant validation result: {is_plant}, confidence: {is_plant_confidence}")
             except Exception as e:
                 logger.error(f"Error in plant validation: {e}")
