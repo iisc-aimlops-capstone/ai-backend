@@ -198,12 +198,14 @@ async def validate_and_classify_images(files: List[UploadFile] = File(..., descr
         results = []
         for file in files:
             # Save the uploaded file to the upload folder
-            file_path = os.path.join(configs['INPUT_FILE_PATH'], file.filename)
+            if not os.path.exists(os.path.join(parent, configs['INPUT_FILE_PATH'])):
+                os.makedirs(os.path.join(parent, configs['INPUT_FILE_PATH']))
+            file_path = os.path.join(parent, configs['INPUT_FILE_PATH'], file.filename)
             with open(file_path, "wb") as buffer:
                 buffer.write(file.file.read())
 
             try:
-                is_plant, label, is_plant_confidence = validate_data()
+                is_plant, label, is_plant_confidence, img_path = validate_data()
             except Exception as e:
                 logger.error(f"Error in plant validation: {e}")
                 results.append(ValidationResult(
@@ -217,6 +219,8 @@ async def validate_and_classify_images(files: List[UploadFile] = File(..., descr
                 continue
 
             if not is_plant:
+                import shutil
+                shutil.rmtree(img_path)
                 results.append(ValidationResult(
                     filename=file.filename,
                     image="processed",

@@ -8,7 +8,7 @@ sys.path.append(str(root))
 
 
 import os
-
+import shutil
 from PIL import Image
 from datetime import datetime
 from typing import List, Optional
@@ -59,7 +59,7 @@ def predict_disease():
     - Run inference
     - Print/present results
     """
-    images = get_images_from_path()
+    images, img_path = get_images_from_path()
 
     # Initialize model
     try:
@@ -75,6 +75,8 @@ def predict_disease():
     if not results:
         logger.error("error")
         raise 
+
+    shutil.rmtree(img_path)
 
     # # Output results
     # json_results = []
