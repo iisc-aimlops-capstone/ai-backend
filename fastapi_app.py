@@ -37,6 +37,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Add CORS middleware to allow requests from Streamlit
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace with your Streamlit app's URL
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 config_path = parent / "configs" / "config.yaml"
 configs = load_yaml_config(str(config_path))
 

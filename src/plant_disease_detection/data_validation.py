@@ -31,7 +31,8 @@ def validate_data():
         classifier = ImageValidator(os.path.join(root, configs["IMG_VAL_MODEL_CKPT"]))
 
         # Load and validate the image
-        image = get_images_from_path()[0]
+        image, img_path = get_images_from_path()
+        image = image[0]  ############################## remove when using multi image
         if not processor.validate_image(image):
             logger.error("Image validation failed.")
             return
@@ -44,13 +45,13 @@ def validate_data():
         is_plant, label, confidence = classifier.predict(image_tensor)
         logger.info(f"Result: {label} with confidence {confidence:.2f}")
 
-        return is_plant, label, confidence
+        return is_plant, label, confidence, img_path
 
     except Exception as e:
         logger.error(f"An error occurred: {e}")
 
 if __name__ == "__main__":
     start = datetime.now()
-    validate_data()
+    is_plant, label, confidence = validate_data()
     end = datetime.now()
     logger.info(f"Time taken: {end-start}")
