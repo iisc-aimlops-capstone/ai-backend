@@ -28,7 +28,7 @@ def load_image_from_path(image_path: str) -> Image.Image:
     """
     try:
         image = Image.open(image_path)
-        logger.info(f"Loaded image from {image_path}")
+        logger.info(f"Loaded image: {image_path}")
         return image
     except Exception as e:
         logger.exception(f"Failed to load image from {image_path}: {e}")
@@ -56,18 +56,22 @@ def load_image_from_url(image_url: str) -> Image.Image:
 def get_images_from_path(image_inputs=None):
     # Sample/Multiple input images
     if image_inputs in ([], None):
-        image_inputs = os.listdir(os.path.join(root, configs['INPUT_FILE_PATH']))
-        logger.info(f"Loading images from local path: {os.path.join(root, 'pred')}")
-        logger.info(f"Images available in the path: {image_inputs}")
+        input_path = os.path.join(root, configs['INPUT_FILE_PATH'])
+        image_inputs = os.listdir(input_path)
+        # logger.info(f"Loading images from local path: {input_path}")
+        logger.info(f"Images available in the path: {input_path} : {image_inputs}")
 
     # Load images
     images = []
     for inp in image_inputs:
         if inp.startswith("http"):
             images.append(load_image_from_url(inp))
-        elif os.path.exists(os.path.join(root, "pred", inp)):
-            images.append(load_image_from_path(os.path.join(root, "pred", inp)))
+        elif os.path.exists(os.path.join(input_path, inp)):
+            input_image = os.path.join(input_path, inp)
+            logger.info(f"Loading Image: {input_image}")
+            images.append(load_image_from_path(input_image))
+            logger.info(f"testtest -----------------{images}")
         else:
             logger.warning(f"Invalid input, skipping: {inp}")
             return "Input Error"
-    return images
+    return images, input_path
