@@ -12,9 +12,9 @@ env:
   TASK_DEF_FAMILY: ecs-iisc-aimlops-cap-task-be
   CONTAINER_NAME: ecs-iisc-aimlops-cap-container-be
   TARGET_GROUP_ARN: arn:aws:elasticloadbalancing:us-east-2:671336841184:targetgroup/tg-iisc-aimlops-cap-be/aa3d22b66ca540cb
-  SUBNET1: subnet-02a7a02a9f8feff33
-  SUBNET2: subnet-06ad8298d28daac66
-  SG_ID: sg-0e2e45eb07f34ee4c
+  SUBNET1: "subnet-02a7a02a9f8feff33"
+  SUBNET2: "subnet-06ad8298d28daac66"
+  SG_ID: "sg-0e2e45eb07f34ee4c"
 
 jobs:
   deploy:
