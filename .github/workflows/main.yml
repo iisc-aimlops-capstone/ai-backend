@@ -11,6 +11,10 @@ env:
   ECS_SERVICE: ecs-svc-iisc-aimlops-cap-be
   TASK_DEF_FAMILY: ecs-iisc-aimlops-cap-task-be
   CONTAINER_NAME: ecs-iisc-aimlops-cap-container-be
+  TARGET_GROUP_ARN: arn:aws:elasticloadbalancing:us-east-2:671336841184:targetgroup/tg-iisc-aimlops-cap-be/aa3d22b66ca540cb
+  SUBNET1: subnet-02a7a02a9f8feff33
+  SUBNET2: subnet-06ad8298d28daac66
+  SG_ID: sg-0e2e45eb07f34ee4c
 
 jobs:
   deploy:
@@ -90,7 +94,7 @@ jobs:
             --task-definition $TASK_DEF_ARN \
             --launch-type FARGATE \
             --desired-count 1 \
-            --network-configuration 'awsvpcConfiguration={subnets=["subnet-abc123","subnet-def456"],securityGroups=["sg-012345"],assignPublicIp="ENABLED"}' \
-            --load-balancers 'targetGroupArn=arn:aws:elasticloadbalancing:...,containerName='"$CONTAINER_NAME"',containerPort=8000' \
+            --network-configuration 'awsvpcConfiguration={subnets=['"$SUBNET1"','"SUBNET2"'],securityGroups=['"$SG_ID"'],assignPublicIp="ENABLED"}' \
+            --load-balancers 'targetGroupArn='"$TARGET_GROUP_ARN"',containerName='"$CONTAINER_NAME"',containerPort=8000' \
             --platform-version LATEST
         fi
