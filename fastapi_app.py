@@ -17,8 +17,13 @@ from botocore.exceptions import ClientError, NoCredentialsError
 import tempfile
 from src.plant_disease_detection.data_validation import validate_data
 from src.plant_disease_detection.infer import predict_disease
+from src.plant_disease_detection.rag_system import RagApp
+from src.plant_disease_detection.translate import translate_text
 from utils.logger import get_logger
 from utils.config import load_yaml_config
+
+# Set the OpenAI API in Environment
+# openai.api_key = os.environ.get("OPENAI_API_KEY")
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -62,6 +67,7 @@ class ValidationResult(BaseModel):
     label: Optional[str] = None
     confidence: Optional[float] = None
     message: str
+    disease_details: str
 
 def download_from_s3(bucket_name: str, file_key: str, local_path: str) -> bool:
     """
@@ -132,7 +138,7 @@ async def analyze_image_from_s3(request: S3ImageRequest):
             
             # Validate if the image contains a plant
             try:
-                is_plant, label, is_plant_confidence = validate_data()
+                is_plant, label, is_plant_confidence, img_path = validate_data()
                 logger.info(f"Plant validation result: {is_plant}, confidence: {is_plant_confidence}")
             except Exception as e:
                 logger.error(f"Error in plant validation: {e}")
@@ -233,15 +239,21 @@ async def validate_and_classify_images(files: List[UploadFile] = File(..., descr
 
             try:
                 prediction_results = predict_disease()
+                rag_retreival = RagApp()
+                question = f"Provide all information about the disease {prediction_results['predicted_class']}"
+                disease_details = rag_retreival.run(question)
+                if 'generation' not in disease_details:
+                    logger.info("No response generated")
             except Exception as e:
                 logger.error(f"Error in disease prediction: {e}")
                 results.append(ValidationResult(
                     filename=file.filename,
                     image="error",
                     is_plant=f"True with confidence: {is_plant_confidence}",
-                    label=None,
-                    confidence=None,
-                    message=f"Disease prediction failed: {str(e)}"
+                    label=prediction_results.get('predicted_class', 'None'),
+                    confidence=prediction_results.get('confidence', 0.0),
+                    message=f"Disease prediction failed: {str(e)}",
+                    disease_details=disease_details.get('generation', 'No response')
                 ))
                 continue
                 
@@ -252,7 +264,8 @@ async def validate_and_classify_images(files: List[UploadFile] = File(..., descr
                 is_plant=f"True with confidence: {is_plant_confidence}",
                 label=prediction_results.get('predicted_class', 'Unknown'),
                 confidence=prediction_results.get('confidence', 0.0),
-                message="Image is valid and classified successfully."
+                message="Image is valid and classified successfully.",
+                disease_details=disease_details.get('generation', 'No response')
             ))
             
         return results

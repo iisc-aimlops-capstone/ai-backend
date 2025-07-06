@@ -9,6 +9,7 @@ LOG_LEVEL: INFO
 LOG_FILE_PATH: null   # Set to logs/app.log for File handler logging
 
 # Model identifiers
+CHROMA_DB: "artifacts/chroma_db_plant_disease"
 IMG_CLASS_MODEL_CKPT: "artifacts/image_classification_model/"  # "linkanjarad/mobilenet_v2_1.0_224-plant-disease-identification"
 IMG_VAL_MODEL_CKPT: "artifacts/image_validation_model/binary_leaf_classifier.pth"
 
