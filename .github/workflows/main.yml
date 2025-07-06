@@ -3,6 +3,7 @@ name: Deploy FastAPI to ECS Fargate
 on:
   push:
     branches: [ main ]  # or your preferred branch
+  workflow_dispatch:
 
 env:
   AWS_REGION: us-east-2
