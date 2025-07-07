@@ -172,13 +172,19 @@ async def analyze_image_from_s3(request: S3ImageRequest):
                     is_plant=f"False with confidence: {is_plant_confidence}",
                     label=None,
                     confidence=None,
-                    message="Image validation failed. The uploaded image does not appear to contain a plant."
+                    message="Image validation failed. The uploaded image does not appear to contain a plant.",
+                    disease_details=None
                 )
             
             # Predict disease if it's a plant
             try:
                 prediction_results = predict_disease()
                 logger.info(f"Disease prediction results: {prediction_results}")
+                rag_retreival = RagApp()
+                question = f"Provide all information about the disease {prediction_results['predicted_class']}"
+                disease_details = rag_retreival.run(question)
+                if 'generation' not in disease_details:
+                    logger.info("No response generated")
             except Exception as e:
                 logger.error(f"Error in disease prediction: {e}")
                 raise HTTPException(status_code=500, detail=f"Disease prediction failed: {str(e)}")
@@ -189,7 +195,8 @@ async def analyze_image_from_s3(request: S3ImageRequest):
                 is_plant=f"True with confidence: {is_plant_confidence}",
                 label=prediction_results.get('predicted_class', 'Unknown'),
                 confidence=prediction_results.get('confidence', 0.0),
-                message="Image is valid and classified successfully."
+                message="Image is valid and classified successfully.",
+                disease_details=disease_details.get('generation', 'No response')
             )
             
         finally:
@@ -245,7 +252,8 @@ async def validate_and_classify_images(files: List[UploadFile] = File(..., descr
                     is_plant="Error",
                     label=None,
                     confidence=None,
-                    message=f"Plant validation failed: {str(e)}"
+                    message=f"Plant validation failed: {str(e)}",
+                    disease_details=None
                 ))
                 continue
 
@@ -264,7 +272,8 @@ async def validate_and_classify_images(files: List[UploadFile] = File(..., descr
                     is_plant=f"False with confidence: {is_plant_confidence}",
                     label=None,
                     confidence=None,
-                    message="Image validation failed. The uploaded image does not appear to contain a plant."
+                    message="Image validation failed. The uploaded image does not appear to contain a plant.",
+                    disease_details=None
                 ))
                 continue
 
