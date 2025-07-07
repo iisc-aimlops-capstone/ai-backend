@@ -6,6 +6,7 @@ sys.path.append(str(root))
 
 
 import os
+import pandas as pd
 from PIL import Image
 from utils.logger import get_logger
 from utils.config import load_yaml_config
@@ -17,6 +18,17 @@ configs = load_yaml_config(str(config_path))
 
 # Initialize logger
 logger = get_logger(__name__, log_level=configs['LOG_LEVEL'], log_file=configs['LOG_FILE_PATH'])
+
+def load_data(filepath="plant_diseases_treatment_2.csv"):
+    """Loads CSV data from path."""
+    try:
+        df = pd.read_csv(filepath)
+        print("CSV read successful")
+        return df
+    except FileNotFoundError:
+        print(f"Error reading file '{filepath}'")
+        raise
+    
 
 def load_image_from_path(image_path: str) -> Image.Image:
     """
