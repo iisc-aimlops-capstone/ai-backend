@@ -196,7 +196,7 @@ class RagApp:
             print("Decision: No documents found. Ending graph.")
             return "end"
         else:
-            print(f"Decision: {len(state["documents"])} Documents found. Proceeding to generate.")
+            print(f"Decision: {len(state['documents'])} Documents found. Proceeding to generate.")
             print(state["documents"])
             return "generate"
 
