@@ -25,11 +25,11 @@ import openai
 
 # Load environment variables
 # Uncomment the following line if you are using a .env file 
-#from dotenv import load_dotenv
-#load_dotenv()
+from dotenv import load_dotenv
+load_dotenv()
 
 # Set the OpenAI API in Environment
-openai.api_key = os.environ.get("OPENAI_API_KEY")
+# openai.api_key = os.environ.get("OPENAI_API_KEY")
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -83,7 +83,7 @@ class ValidationResult(BaseModel):
     label: Optional[str] = None
     confidence: Optional[float] = None
     message: str
-    disease_details: str
+    disease_details: Optional[str] = None
 
 def download_from_s3(bucket_name: str, file_key: str, local_path: str) -> bool:
     """
@@ -149,6 +149,7 @@ async def analyze_image_from_s3(request: S3ImageRequest):
     Returns:
         ValidationResult: Analysis results for the image
     """
+    disease_details=None
     try:
         logger.info(f"Processing image: {request.file_key} from bucket: {S3_BUCKET_NAME}")
         
@@ -199,8 +200,12 @@ async def analyze_image_from_s3(request: S3ImageRequest):
                 rag_retreival = RagApp()
                 question = f"Provide all information about the disease {prediction_results['predicted_class']}"
                 disease_details = rag_retreival.run(question)
+                logger.info(disease_details)
+                
                 if 'generation' not in disease_details:
                     logger.info("No response generated")
+                else:
+                    disease_details = disease_details["generation"]
             except Exception as e:
                 logger.error(f"Error in disease prediction: {e}")
                 raise HTTPException(status_code=500, detail=f"Disease prediction failed: {str(e)}")
@@ -212,7 +217,7 @@ async def analyze_image_from_s3(request: S3ImageRequest):
                 label=prediction_results.get('predicted_class', 'Unknown'),
                 confidence=prediction_results.get('confidence', 0.0),
                 message="Image is valid and classified successfully.",
-                disease_details=disease_details.get('generation', 'No response')
+                disease_details=disease_details
             )
             
         finally:
@@ -248,6 +253,7 @@ async def validate_and_classify_images(files: List[UploadFile] = File(..., descr
     Returns:
         List[ValidationResult]: List of validation results for each image.
     """
+    disease_details=None
     try:
         results = []
         for file in files:
@@ -298,8 +304,12 @@ async def validate_and_classify_images(files: List[UploadFile] = File(..., descr
                 rag_retreival = RagApp()
                 question = f"Provide all information about the disease {prediction_results['predicted_class']}"
                 disease_details = rag_retreival.run(question)
+                logger.info(disease_details)
+                
                 if 'generation' not in disease_details:
                     logger.info("No response generated")
+                else:
+                    disease_details = disease_details["generation"]
             except Exception as e:
                 logger.error(f"Error in disease prediction: {e}")
                 results.append(ValidationResult(
@@ -309,7 +319,7 @@ async def validate_and_classify_images(files: List[UploadFile] = File(..., descr
                     label=prediction_results.get('predicted_class', 'None'),
                     confidence=prediction_results.get('confidence', 0.0),
                     message=f"Disease prediction failed: {str(e)}",
-                    disease_details=disease_details.get('generation', 'No response')
+                    disease_details=disease_details
                 ))
                 continue
                 
@@ -321,7 +331,7 @@ async def validate_and_classify_images(files: List[UploadFile] = File(..., descr
                 label=prediction_results.get('predicted_class', 'Unknown'),
                 confidence=prediction_results.get('confidence', 0.0),
                 message="Image is valid and classified successfully.",
-                disease_details=disease_details.get('generation', 'No response')
+                disease_details=disease_details
             ))
         os.makedirs(configs['INPUT_FILE_PATH'], exist_ok=True)
         return results

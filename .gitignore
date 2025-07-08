@@ -177,4 +177,4 @@ cython_debug/
 # *.jpeg
 
 
-artifacts/chroma_db_plant_disease/
+.artifacts/chrom*

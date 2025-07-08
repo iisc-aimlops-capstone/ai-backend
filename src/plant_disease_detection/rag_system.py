@@ -73,6 +73,17 @@ def create_vector_store(df, embeddings, chroma_db):
     return vectorstore
 
 
+# # --- Add this Wrapper Class ---
+# class MyEmbeddingFunction(EmbeddingFunction):
+#     def __init__(self, embeddings: OpenAIEmbeddings):
+#         self.embeddings = embeddings
+
+#     def __call__(self, input: Documents) -> Embeddings:
+#         # LangChain's embedding models expect a list of strings.
+#         # The 'input' from ChromaDB is already a list of strings.
+#         return self.embeddings.embed_documents(input)
+
+
 # --- Step 5: Define the RAG Workflow as a Class ---
 class RagApp:
     def __init__(self, persist_directory=os.path.join(root, configs['CHROMA_DB'])):
@@ -81,8 +92,11 @@ class RagApp:
         self.persist_directory = persist_directory
         # 1. Initialize Tools
         # 2. Check for and load/create the vector store
-        # self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
         self.embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+        # openai_embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+        # # 2. Wrap it for ChromaDB
+        # self.embeddings = MyEmbeddingFunction(openai_embeddings)
+
         if os.path.exists(self.persist_directory):
             print(f"Loading existing vector store from '{self.persist_directory}'...")
             vector_store = Chroma(
