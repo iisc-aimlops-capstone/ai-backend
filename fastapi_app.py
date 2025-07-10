@@ -25,11 +25,11 @@ import openai
 
 # Load environment variables
 # Uncomment the following line if you are using a .env file 
-from dotenv import load_dotenv
-load_dotenv()
+#from dotenv import load_dotenv
+#load_dotenv()
 
 # Set the OpenAI API in Environment
-# openai.api_key = os.environ.get("OPENAI_API_KEY")
+openai.api_key = os.environ.get("OPENAI_API_KEY")
 
 # Initialize FastAPI app
 app = FastAPI(
