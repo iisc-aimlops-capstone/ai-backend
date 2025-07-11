@@ -27,8 +27,8 @@ from googletrans import Translator, LANGUAGES
 
 # Load environment variables
 # Uncomment the following line if you are using a .env file 
-from dotenv import load_dotenv
-load_dotenv()
+#from dotenv import load_dotenv
+#load_dotenv()
 
 # --- Dependency Injection for Translator ---
 # This makes your app easier to test and manage.
@@ -36,7 +36,7 @@ def get_translator():
     return Translator()
 
 # Set the OpenAI API in Environment
-# openai.api_key = os.environ.get("OPENAI_API_KEY")
+openai.api_key = os.environ.get("OPENAI_API_KEY")
 
 # Initialize FastAPI app
 app = FastAPI(
