@@ -5,7 +5,7 @@ parent = file.parent
 print(f"Parent: {parent}")
 sys.path.append(str(parent))
 
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -13,6 +13,7 @@ from typing import List, Optional
 import uvicorn
 import os
 import boto3
+import asyncio
 from botocore.exceptions import ClientError, NoCredentialsError
 import tempfile
 from src.plant_disease_detection.data_validation import validate_data
@@ -364,8 +365,8 @@ async def health_check():
 
 # --- Pydantic Models for Clear Contracts ---
 class TranslationRequest(BaseModel):
-    text: str = Field(..., min_length=1, description="Text to be translated.")
-    target_language: str = Field(..., description="Target language code (e.g., 'es', 'ta').")
+    text: str
+    target_language: str
 
 
 @app.post("/translate")
@@ -384,8 +385,7 @@ async def translate_text(
         )
     try:
         # Run the potentially slow I/O operation in the background
-        translated = await asyncio.to_thread(
-            translator.translate,
+        translated = await translator.translate(
             text=request.text,
             dest=request.target_language
         )
