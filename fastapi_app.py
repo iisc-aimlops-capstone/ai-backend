@@ -22,11 +22,18 @@ from src.plant_disease_detection.translate import translate_text
 from utils.logger import get_logger
 from utils.config import load_yaml_config
 import openai
+from googletrans import Translator, LANGUAGES
+
 
 # Load environment variables
 # Uncomment the following line if you are using a .env file 
 from dotenv import load_dotenv
 load_dotenv()
+
+# --- Dependency Injection for Translator ---
+# This makes your app easier to test and manage.
+def get_translator():
+    return Translator()
 
 # Set the OpenAI API in Environment
 # openai.api_key = os.environ.get("OPENAI_API_KEY")
@@ -84,6 +91,7 @@ class ValidationResult(BaseModel):
     confidence: Optional[float] = None
     message: str
     disease_details: Optional[str] = None
+
 
 def download_from_s3(bucket_name: str, file_key: str, local_path: str) -> bool:
     """
@@ -353,6 +361,51 @@ async def health_check():
         "message": "Plant Disease Detection API is running",
         "version": "1.0.0"
     }
+
+# --- Pydantic Models for Clear Contracts ---
+class TranslationRequest(BaseModel):
+    text: str = Field(..., min_length=1, description="Text to be translated.")
+    target_language: str = Field(..., description="Target language code (e.g., 'es', 'ta').")
+
+
+@app.post("/translate")
+async def translate_text(
+    request: TranslationRequest,
+    translator: Translator = Depends(get_translator)
+):
+    """
+    Translates the given text to a target language asynchronously.
+    """
+    if request.target_language not in LANGUAGES:
+        logger.warning(f"Invalid language code received: {request.target_language}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid target language code '{request.target_language}'. Please use a valid code from the supported list."
+        )
+    try:
+        # Run the potentially slow I/O operation in the background
+        translated = await asyncio.to_thread(
+            translator.translate,
+            text=request.text,
+            dest=request.target_language
+        )
+        # translated = translator.translate(
+        #     request.text,
+        #     dest=request.target_language
+        # )
+        logger.info(f"Successfully translated text to '{request.target_language}'")
+        # return TranslationResponse(translated_text=translated.text)
+        return {"translated_text": translated.text}
+
+    except Exception as e:
+        logger.error(f"Translation failed for target language '{request.target_language}': {e}", exc_info=True)
+        return {"error": f"Translation failed: {str(e)}"}
+        # raise HTTPException(
+        #     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        #     detail="An unexpected error occurred during translation. The issue has been logged."
+        # )
+
+
 
 # Run the FastAPI app
 if __name__ == "__main__":
