@@ -24,12 +24,15 @@ from utils.logger import get_logger
 from utils.config import load_yaml_config
 import openai
 from googletrans import Translator, LANGUAGES
+import google.generativeai as genai
+import json
+from PIL import Image
 
 
 # Load environment variables
 # Uncomment the following line if you are using a .env file 
-#from dotenv import load_dotenv
-#load_dotenv()
+from dotenv import load_dotenv
+load_dotenv()
 
 # --- Dependency Injection for Translator ---
 # This makes your app easier to test and manage.
@@ -38,6 +41,9 @@ def get_translator():
 
 # Set the OpenAI API in Environment
 openai.api_key = os.environ.get("OPENAI_API_KEY")
+
+# Configure Gemini
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -262,7 +268,7 @@ async def validate_and_classify_images(files: List[UploadFile] = File(..., descr
     Returns:
         List[ValidationResult]: List of validation results for each image.
     """
-    disease_details=None
+    disease_details = None
     try:
         results = []
         for file in files:
@@ -292,7 +298,7 @@ async def validate_and_classify_images(files: List[UploadFile] = File(..., descr
                 if os.path.isfile(img_path):
                     os.remove(img_path)
                 elif os.path.isdir(img_path):
-                # Only remove files inside, not the folder itself
+                    # Only remove files inside, not the folder itself
                     for f in os.listdir(img_path):
                         file_path = os.path.join(img_path, f)
                         if os.path.isfile(file_path):
@@ -310,44 +316,192 @@ async def validate_and_classify_images(files: List[UploadFile] = File(..., descr
 
             try:
                 prediction_results = predict_disease()
-                rag_retreival = RagApp()
+                rag_retrieval = RagApp()
                 question = f"Provide all information about the disease {prediction_results['predicted_class']}"
-                disease_details = rag_retreival.run(question)
+                disease_details = rag_retrieval.run(question)
                 logger.info(disease_details)
                 
                 if 'generation' not in disease_details:
-                    logger.info("No response generated")
+                    logger.info("No response generated from custom model, trying Gemini fallback")
+                    
+                    # Gemini fallback integration
+                    try:
+                        # Call Gemini for disease identification
+                        gemini_classification = await classify_image_with_gemini(file_path)
+                        
+                        if gemini_classification:
+                            # Parse the Gemini response
+                            gemini_result = json.loads(gemini_classification)
+                            
+                            # Get disease details from Gemini
+                            gemini_disease_details = await get_disease_details_with_gemini(gemini_result)
+                            
+                            results.append(ValidationResult(
+                                filename=file.filename,
+                                image="processed",
+                                is_plant=gemini_result.get('is_plant', f"True with confidence: {is_plant_confidence}"),
+                                label=gemini_result.get('label', 'Unknown'),
+                                confidence=gemini_result.get('confidence', 0.0),
+                                message=gemini_result.get('message', "[Results generated from Gemini-2.5-flash] Image is valid and classified successfully."),
+                                disease_details=gemini_disease_details
+                            ))
+                        else:
+                            # Both custom model and Gemini failed
+                            results.append(ValidationResult(
+                                filename=file.filename,
+                                image="error",
+                                is_plant=f"True with confidence: {is_plant_confidence}",
+                                label=prediction_results.get('predicted_class', 'None'),
+                                confidence=prediction_results.get('confidence', 0.0),
+                                message="Disease prediction failed: Both custom model and Gemini fallback failed",
+                                disease_details=None
+                            ))
+                    except Exception as gemini_error:
+                        logger.error(f"Gemini fallback failed: {gemini_error}")
+                        results.append(ValidationResult(
+                            filename=file.filename,
+                            image="error",
+                            is_plant=f"True with confidence: {is_plant_confidence}",
+                            label=prediction_results.get('predicted_class', 'None'),
+                            confidence=prediction_results.get('confidence', 0.0),
+                            message=f"Disease prediction failed: Custom model failed, Gemini fallback error: {str(gemini_error)}",
+                            disease_details=None
+                        ))
                 else:
+                    # Custom model succeeded
                     disease_details = disease_details["generation"]
+                    results.append(ValidationResult(
+                        filename=file.filename,
+                        image="processed",
+                        is_plant=f"True with confidence: {is_plant_confidence}",
+                        label=prediction_results.get('predicted_class', 'Unknown'),
+                        confidence=prediction_results.get('confidence', 0.0),
+                        message="Image is valid and classified successfully.",
+                        disease_details=disease_details
+                    ))
+                    
             except Exception as e:
                 logger.error(f"Error in disease prediction: {e}")
-                results.append(ValidationResult(
-                    filename=file.filename,
-                    image="error",
-                    is_plant=f"True with confidence: {is_plant_confidence}",
-                    label=prediction_results.get('predicted_class', 'None'),
-                    confidence=prediction_results.get('confidence', 0.0),
-                    message=f"Disease prediction failed: {str(e)}",
-                    disease_details=disease_details
-                ))
+                
+                # Try Gemini as fallback when custom model fails completely
+                try:
+                    logger.info("Custom model failed completely, trying Gemini fallback")
+                    gemini_classification = await classify_image_with_gemini(file_path)
+                    
+                    if gemini_classification:
+                        gemini_result = json.loads(gemini_classification)
+                        gemini_disease_details = await get_disease_details_with_gemini(gemini_result)
+                        
+                        results.append(ValidationResult(
+                            filename=file.filename,
+                            image="processed",
+                            is_plant=gemini_result.get('is_plant', f"True with confidence: {is_plant_confidence}"),
+                            label=gemini_result.get('label', 'Unknown'),
+                            confidence=gemini_result.get('confidence', 0.0),
+                            message=gemini_result.get('message', "[Results generated from Gemini-2.5-flash] Image is valid and classified successfully."),
+                            disease_details=gemini_disease_details
+                        ))
+                    else:
+                        results.append(ValidationResult(
+                            filename=file.filename,
+                            image="error",
+                            is_plant=f"True with confidence: {is_plant_confidence}",
+                            label=None,
+                            confidence=0.0,
+                            message=f"Disease prediction failed: {str(e)}",
+                            disease_details=None
+                        ))
+                except Exception as gemini_error:
+                    logger.error(f"Gemini fallback failed: {gemini_error}")
+                    results.append(ValidationResult(
+                        filename=file.filename,
+                        image="error",
+                        is_plant=f"True with confidence: {is_plant_confidence}",
+                        label=None,
+                        confidence=0.0,
+                        message=f"Disease prediction failed: {str(e)}",
+                        disease_details=None
+                    ))
                 continue
                 
-            # Append the results for this image
-            results.append(ValidationResult(
-                filename=file.filename,
-                image="processed",
-                is_plant=f"True with confidence: {is_plant_confidence}",
-                label=prediction_results.get('predicted_class', 'Unknown'),
-                confidence=prediction_results.get('confidence', 0.0),
-                message="Image is valid and classified successfully.",
-                disease_details=disease_details
-            ))
         os.makedirs(configs['INPUT_FILE_PATH'], exist_ok=True)
         return results
 
     except Exception as e:
         logger.error(f"Unexpected error in validate_and_classify_images: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred: {e}")
+
+
+# Helper functions for Gemini integration
+async def classify_image_with_gemini(image_path: str) -> str:
+    """
+    Classify image using Gemini model.
+    
+    Args:
+        image_path (str): Path to the image file
+        
+    Returns:
+        str: JSON string with classification results
+    """
+    try:
+        # Initialize Gemini model (adjust based on your Gemini setup)
+        model = genai.GenerativeModel('gemini-2.0-flash-exp')
+        
+        # Read and prepare the image
+        with open(image_path, 'rb') as image_file:
+            image_data = image_file.read()
+        
+        # Prepare the image for Gemini
+        image = {
+            'mime_type': 'image/jpeg',  # or 'image/png' based on your image
+            'data': image_data
+        }
+        
+        # Get the prompt
+        prompt = get_disease_identification_prompt()
+        
+        # Generate response
+        response = model.generate_content([prompt, image])
+        
+        # Clean the response to ensure it's valid JSON
+        response_text = response.text.strip()
+        
+        # Remove any markdown formatting if present
+        if response_text.startswith('```json'):
+            response_text = response_text.replace('```json', '').replace('```', '').strip()
+        
+        return response_text
+        
+    except Exception as e:
+        logger.error(f"Error in Gemini classification: {e}")
+        return None
+
+
+async def get_disease_details_with_gemini(classification_result: dict) -> str:
+    """
+    Get detailed disease information using Gemini text model.
+    
+    Args:
+        classification_result (dict): The classification result from Gemini
+        
+    Returns:
+        str: Detailed disease information
+    """
+    try:
+        # Initialize Gemini model for text generation
+        model = genai.GenerativeModel('gemini-2.0-flash-exp')
+        
+        # Get the prompt for disease details
+        prompt = get_disease_details_prompt(classification_result)
+        
+        # Generate response
+        response = model.generate_content(prompt)
+        
+        return response.text.strip()
+        
+    except Exception as e:
+        logger.error(f"Error in Gemini disease details: {e}")
+        return "Unable to generate disease details at this time."
 
 @app.get("/health/", summary="Check API health")
 async def health_check():
