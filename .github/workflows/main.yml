@@ -124,3 +124,4 @@ jobs:
               --network-configuration "awsvpcConfiguration={subnets=[\"$SUBNET1\",\"$SUBNET2\"],securityGroups=[\"$SG_ID\"],assignPublicIp=\"ENABLED\"}" \
               --load-balancers "targetGroupArn=$TARGET_GROUP_ARN,containerName=$CONTAINER_NAME,containerPort=8000" \
               --platform-version LATEST
+          fi
