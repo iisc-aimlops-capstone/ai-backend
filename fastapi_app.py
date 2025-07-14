@@ -28,8 +28,8 @@ from googletrans import Translator, LANGUAGES
 
 # Load environment variables
 # Uncomment the following line if you are using a .env file 
-#from dotenv import load_dotenv
-#load_dotenv()
+from dotenv import load_dotenv
+load_dotenv()
 
 # --- Dependency Injection for Translator ---
 # This makes your app easier to test and manage.
@@ -37,7 +37,7 @@ def get_translator():
     return Translator()
 
 # Set the OpenAI API in Environment
-openai.api_key = os.environ.get("OPENAI_API_KEY")
+# openai.api_key = os.environ.get("OPENAI_API_KEY")
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -310,6 +310,17 @@ async def validate_and_classify_images(files: List[UploadFile] = File(..., descr
 
             try:
                 prediction_results = predict_disease()
+                if 'healthy' in prediction_results['predicted_class'].lower():
+                    results.append(ValidationResult(
+                        filename=file.filename,
+                        image="processed",
+                        is_plant=f"True with confidence: {is_plant_confidence}",
+                        label=prediction_results.get('predicted_class', 'None'),
+                        confidence=prediction_results.get('confidence', 0.0),
+                        message="Plant is Healthy. No additional information is needed.",
+                        disease_details="Healthy Plant"
+                    ))
+                    return results
                 rag_retreival = RagApp()
                 question = f"Provide all information about the disease {prediction_results['predicted_class']}"
                 disease_details = rag_retreival.run(question)
@@ -317,6 +328,16 @@ async def validate_and_classify_images(files: List[UploadFile] = File(..., descr
                 
                 if 'generation' not in disease_details:
                     logger.info("No response generated")
+                    results.append(ValidationResult(
+                        filename=file.filename,
+                        image="error",
+                        is_plant=f"True with confidence: {is_plant_confidence}",
+                        label=prediction_results.get('predicted_class', 'None'),
+                        confidence=prediction_results.get('confidence', 0.0),
+                        message=f"Disease information not yet available in out database. We are constantly working to update our records and will have this information soon.",
+                        disease_details="Disease information not available yet."
+                    ))
+                    return results
                 else:
                     disease_details = disease_details["generation"]
             except Exception as e:
