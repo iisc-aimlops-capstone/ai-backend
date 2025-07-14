@@ -5,7 +5,7 @@ parent = file.parent
 print(f"Parent: {parent}")
 sys.path.append(str(parent))
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Depends
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Depends
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -14,6 +14,9 @@ import uvicorn
 import os
 import boto3
 import asyncio
+import uuid
+import io
+import datetime
 from botocore.exceptions import ClientError, NoCredentialsError
 import tempfile
 from src.plant_disease_detection.data_validation import validate_data
@@ -31,8 +34,8 @@ from PIL import Image
 
 # Load environment variables
 # Uncomment the following line if you are using a .env file 
-from dotenv import load_dotenv
-load_dotenv()
+#from dotenv import load_dotenv
+#load_dotenv()
 
 # --- Dependency Injection for Translator ---
 # This makes your app easier to test and manage.
@@ -43,7 +46,12 @@ def get_translator():
 openai.api_key = os.environ.get("OPENAI_API_KEY")
 
 # Configure Gemini
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+genai.configure(api_key=GEMINI_API_KEY)
+
+# Initialize Gemini model
+model = genai.GenerativeModel('gemini-2.0-flash-exp')
+
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -151,6 +159,54 @@ def delete_from_s3(bucket_name: str, file_key: str) -> bool:
     except Exception as e:
         logger.error(f"Unexpected error deleting from S3: {e}")
         return False
+
+# Pydantic models
+class ChatMessage(BaseModel):
+    message: str
+    conversation_history: Optional[List[dict]] = []
+
+class ChatResponse(BaseModel):
+    response: str
+    conversation_id: str
+    timestamp: str
+
+class ChatWithImageRequest(BaseModel):
+    message: str
+    image_base64: str
+    conversation_history: Optional[List[dict]] = []
+
+# System prompt for plant disease chatbot
+PLANT_DISEASE_SYSTEM_PROMPT = """
+You are PlantCare AI, an expert plant disease diagnosis and treatment assistant. Your expertise includes:
+
+1. **Plant Disease Identification**: Accurately identify plant diseases from symptoms and images
+2. **Treatment Recommendations**: Provide specific, actionable treatment advice
+3. **Prevention Strategies**: Suggest preventive measures for plant health
+4. **Organic Solutions**: Prioritize eco-friendly and organic treatment methods
+5. **Regional Context**: Consider local climate and farming practices
+6. **Safety Guidelines**: Always emphasize safe handling of treatments
+
+Guidelines:
+- Always maintain a helpful, professional, and encouraging tone
+- Provide detailed, step-by-step instructions when giving treatment advice
+- Ask clarifying questions when symptoms are unclear
+- Recommend consulting local agricultural experts for severe cases
+- Include timing information for treatments (when to apply, frequency)
+- Suggest monitoring and follow-up actions
+- Prioritize sustainable and environmentally friendly solutions
+
+Response Format:
+- Be concise but comprehensive
+- Use bullet points for treatment steps
+- Include warnings about chemical treatments
+- Provide alternative organic options when possible
+- Give realistic timelines for recovery
+
+Remember: You are here to help farmers and gardeners maintain healthy plants through expert guidance and practical solutions.
+"""
+
+# In-memory conversation storage (in production, use a database)
+conversations = {}
 
 
 @app.post("/analyze_from_s3/", response_model=ValidationResult, summary="Analyze image from S3")
@@ -503,6 +559,161 @@ async def get_disease_details_with_gemini(classification_result: dict) -> str:
         logger.error(f"Error in Gemini disease details: {e}")
         return "Unable to generate disease details at this time."
 
+
+@app.post("/chat/text", response_model=ChatResponse)
+async def chat_text_only(request: ChatMessage):
+    """Handle text-only chat messages"""
+    try:
+        # Create conversation history context
+        context = PLANT_DISEASE_SYSTEM_PROMPT + "\n\nConversation History:\n"
+        
+        for msg in request.conversation_history[-5:]:  # Last 5 messages for context
+            context += f"User: {msg.get('user', '')}\n"
+            context += f"Assistant: {msg.get('assistant', '')}\n"
+        
+        context += f"\nCurrent User Question: {request.message}\n"
+        context += "\nPlease provide a helpful response about plant care, disease diagnosis, or treatment:"
+        
+        # Generate response using Gemini
+        response = model.generate_content(context)
+        
+        # Generate conversation ID and timestamp
+        conversation_id = str(uuid.uuid4())
+        timestamp = datetime.datetime.now().isoformat()
+        
+        # Store conversation (in production, use database)
+        conversations[conversation_id] = {
+            "messages": request.conversation_history + [
+                {"user": request.message, "assistant": response.text}
+            ],
+            "timestamp": timestamp
+        }
+        
+        return ChatResponse(
+            response=response.text,
+            conversation_id=conversation_id,
+            timestamp=timestamp
+        )
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Chat processing error: {str(e)}")
+
+@app.post("/chat/image")
+async def chat_with_image(
+    message: str = Form(...),
+    image: UploadFile = File(...),
+    conversation_history: str = Form("[]")
+):
+    """Handle chat with image upload"""
+    try:
+        # Parse conversation history
+        try:
+            conv_history = json.loads(conversation_history)
+        except:
+            conv_history = []
+        
+        # Read and process image
+        image_bytes = await image.read()
+        pil_image = Image.open(io.BytesIO(image_bytes))
+        
+        # Convert to RGB if necessary
+        if pil_image.mode != 'RGB':
+            pil_image = pil_image.convert('RGB')
+        
+        # Create context with conversation history
+        context = PLANT_DISEASE_SYSTEM_PROMPT + "\n\nConversation History:\n"
+        
+        for msg in conv_history[-5:]:  # Last 5 messages for context
+            context += f"User: {msg.get('user', '')}\n"
+            context += f"Assistant: {msg.get('assistant', '')}\n"
+        
+        context += f"\nCurrent User Question: {message}\n"
+        context += """
+Please analyze the uploaded plant image and provide:
+1. Plant identification (if possible)
+2. Disease/problem diagnosis
+3. Severity assessment
+4. Detailed treatment recommendations
+5. Prevention strategies
+6. Expected recovery timeline
+
+Focus on practical, actionable advice that the user can implement immediately.
+"""
+        
+        # Generate response with image
+        response = model.generate_content([context, pil_image])
+        
+        # Generate conversation ID and timestamp
+        conversation_id = str(uuid.uuid4())
+        timestamp = datetime.datetime.now().isoformat()
+        
+        # Store conversation
+        conversations[conversation_id] = {
+            "messages": conv_history + [
+                {
+                    "user": message,
+                    "assistant": response.text,
+                    "has_image": True,
+                    "image_name": image.filename
+                }
+            ],
+            "timestamp": timestamp
+        }
+        
+        return {
+            "response": response.text,
+            "conversation_id": conversation_id,
+            "timestamp": timestamp,
+            "image_processed": True
+        }
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Image chat processing error: {str(e)}")
+
+@app.get("/chat/history/{conversation_id}")
+async def get_conversation_history(conversation_id: str):
+    """Retrieve conversation history"""
+    try:
+        if conversation_id not in conversations:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        return conversations[conversation_id]
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving history: {str(e)}")
+
+@app.delete("/chat/history/{conversation_id}")
+async def clear_conversation_history(conversation_id: str):
+    """Clear specific conversation history"""
+    try:
+        if conversation_id in conversations:
+            del conversations[conversation_id]
+            return {"message": "Conversation history cleared successfully"}
+        else:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error clearing history: {str(e)}")
+
+@app.get("/chat/health")
+async def chat_health_check():
+    """Health check for chat functionality"""
+    try:
+        # Test Gemini connection
+        test_response = model.generate_content("Hello, this is a test message for plant care.")
+        return {
+            "status": "healthy",
+            "gemini_connection": "active",
+            "active_conversations": len(conversations),
+            "test_response_length": len(test_response.text)
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "gemini_connection": "failed"
+        }
+    
 @app.get("/health/", summary="Check API health")
 async def health_check():
     """
