@@ -5,7 +5,7 @@ parent = file.parent
 print(f"Parent: {parent}")
 sys.path.append(str(parent))
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Depends
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Depends
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -14,6 +14,9 @@ import uvicorn
 import os
 import boto3
 import asyncio
+import uuid
+import io
+import datetime
 from botocore.exceptions import ClientError, NoCredentialsError
 import tempfile
 from src.plant_disease_detection.data_validation import validate_data
@@ -24,6 +27,9 @@ from utils.logger import get_logger
 from utils.config import load_yaml_config
 import openai
 from googletrans import Translator, LANGUAGES
+import google.generativeai as genai
+import json
+from PIL import Image
 
 
 # Load environment variables
@@ -38,6 +44,14 @@ def get_translator():
 
 # Set the OpenAI API in Environment
 # openai.api_key = os.environ.get("OPENAI_API_KEY")
+
+# Configure Gemini
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+genai.configure(api_key=GEMINI_API_KEY)
+
+# Initialize Gemini model
+model = genai.GenerativeModel('gemini-2.0-flash-exp')
+
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -145,6 +159,54 @@ def delete_from_s3(bucket_name: str, file_key: str) -> bool:
     except Exception as e:
         logger.error(f"Unexpected error deleting from S3: {e}")
         return False
+
+# Pydantic models
+class ChatMessage(BaseModel):
+    message: str
+    conversation_history: Optional[List[dict]] = []
+
+class ChatResponse(BaseModel):
+    response: str
+    conversation_id: str
+    timestamp: str
+
+class ChatWithImageRequest(BaseModel):
+    message: str
+    image_base64: str
+    conversation_history: Optional[List[dict]] = []
+
+# System prompt for plant disease chatbot
+PLANT_DISEASE_SYSTEM_PROMPT = """
+You are PlantCare AI, an expert plant disease diagnosis and treatment assistant. Your expertise includes:
+
+1. **Plant Disease Identification**: Accurately identify plant diseases from symptoms and images
+2. **Treatment Recommendations**: Provide specific, actionable treatment advice
+3. **Prevention Strategies**: Suggest preventive measures for plant health
+4. **Organic Solutions**: Prioritize eco-friendly and organic treatment methods
+5. **Regional Context**: Consider local climate and farming practices
+6. **Safety Guidelines**: Always emphasize safe handling of treatments
+
+Guidelines:
+- Always maintain a helpful, professional, and encouraging tone
+- Provide detailed, step-by-step instructions when giving treatment advice
+- Ask clarifying questions when symptoms are unclear
+- Recommend consulting local agricultural experts for severe cases
+- Include timing information for treatments (when to apply, frequency)
+- Suggest monitoring and follow-up actions
+- Prioritize sustainable and environmentally friendly solutions
+
+Response Format:
+- Be concise but comprehensive
+- Use bullet points for treatment steps
+- Include warnings about chemical treatments
+- Provide alternative organic options when possible
+- Give realistic timelines for recovery
+
+Remember: You are here to help farmers and gardeners maintain healthy plants through expert guidance and practical solutions.
+"""
+
+# In-memory conversation storage (in production, use a database)
+conversations = {}
 
 
 @app.post("/analyze_from_s3/", response_model=ValidationResult, summary="Analyze image from S3")
@@ -262,7 +324,7 @@ async def validate_and_classify_images(files: List[UploadFile] = File(..., descr
     Returns:
         List[ValidationResult]: List of validation results for each image.
     """
-    disease_details=None
+    disease_details = None
     try:
         results = []
         for file in files:
@@ -292,7 +354,7 @@ async def validate_and_classify_images(files: List[UploadFile] = File(..., descr
                 if os.path.isfile(img_path):
                     os.remove(img_path)
                 elif os.path.isdir(img_path):
-                # Only remove files inside, not the folder itself
+                    # Only remove files inside, not the folder itself
                     for f in os.listdir(img_path):
                         file_path = os.path.join(img_path, f)
                         if os.path.isfile(file_path):
@@ -337,32 +399,111 @@ async def validate_and_classify_images(files: List[UploadFile] = File(..., descr
                         message=f"Disease information not yet available in out database. We are constantly working to update our records and will have this information soon.",
                         disease_details="Disease information not available yet."
                     ))
+                    # return results
+                
+                    logger.info("No response generated from custom model, trying Gemini fallback")
+                    
+                    # Gemini fallback integration
+                    try:
+                        # Call Gemini for disease identification
+                        gemini_classification = await classify_image_with_gemini(file_path)
+                        
+                        if gemini_classification:
+                            # Parse the Gemini response
+                            gemini_result = json.loads(gemini_classification)
+                            
+                            # Get disease details from Gemini
+                            gemini_disease_details = await get_disease_details_with_gemini(gemini_result)
+                            
+                            results.append(ValidationResult(
+                                filename=file.filename,
+                                image="processed",
+                                is_plant=gemini_result.get('is_plant', f"True with confidence: {is_plant_confidence}"),
+                                label=gemini_result.get('label', 'Unknown'),
+                                confidence=gemini_result.get('confidence', 0.0),
+                                message=gemini_result.get('message', "[Results generated from Gemini-2.5-flash] Image is valid and classified successfully."),
+                                disease_details=gemini_disease_details
+                            ))
+                        else:
+                            # Both custom model and Gemini failed
+                            results.append(ValidationResult(
+                                filename=file.filename,
+                                image="error",
+                                is_plant=f"True with confidence: {is_plant_confidence}",
+                                label=prediction_results.get('predicted_class', 'None'),
+                                confidence=prediction_results.get('confidence', 0.0),
+                                message="Disease prediction failed: Both custom model and Gemini fallback failed",
+                                disease_details=None
+                            ))
+                    except Exception as gemini_error:
+                        logger.error(f"Gemini fallback failed: {gemini_error}")
+                        results.append(ValidationResult(
+                            filename=file.filename,
+                            image="error",
+                            is_plant=f"True with confidence: {is_plant_confidence}",
+                            label=prediction_results.get('predicted_class', 'None'),
+                            confidence=prediction_results.get('confidence', 0.0),
+                            message=f"Disease prediction failed: Custom model failed, Gemini fallback error: {str(gemini_error)}",
+                            disease_details=None
+                        ))
                     return results
                 else:
+                    # Custom model succeeded
                     disease_details = disease_details["generation"]
+                    results.append(ValidationResult(
+                        filename=file.filename,
+                        image="processed",
+                        is_plant=f"True with confidence: {is_plant_confidence}",
+                        label=prediction_results.get('predicted_class', 'Unknown'),
+                        confidence=prediction_results.get('confidence', 0.0),
+                        message="Image is valid and classified successfully.",
+                        disease_details=disease_details
+                    ))
+                    
             except Exception as e:
                 logger.error(f"Error in disease prediction: {e}")
-                results.append(ValidationResult(
-                    filename=file.filename,
-                    image="error",
-                    is_plant=f"True with confidence: {is_plant_confidence}",
-                    label=prediction_results.get('predicted_class', 'None'),
-                    confidence=prediction_results.get('confidence', 0.0),
-                    message=f"Disease prediction failed: {str(e)}",
-                    disease_details=disease_details
-                ))
+                
+                # Try Gemini as fallback when custom model fails completely
+                try:
+                    logger.info("Custom model failed completely, trying Gemini fallback")
+                    gemini_classification = await classify_image_with_gemini(file_path)
+                    
+                    if gemini_classification:
+                        gemini_result = json.loads(gemini_classification)
+                        gemini_disease_details = await get_disease_details_with_gemini(gemini_result)
+                        
+                        results.append(ValidationResult(
+                            filename=file.filename,
+                            image="processed",
+                            is_plant=gemini_result.get('is_plant', f"True with confidence: {is_plant_confidence}"),
+                            label=gemini_result.get('label', 'Unknown'),
+                            confidence=gemini_result.get('confidence', 0.0),
+                            message=gemini_result.get('message', "[Results generated from Gemini-2.5-flash] Image is valid and classified successfully."),
+                            disease_details=gemini_disease_details
+                        ))
+                    else:
+                        results.append(ValidationResult(
+                            filename=file.filename,
+                            image="error",
+                            is_plant=f"True with confidence: {is_plant_confidence}",
+                            label=None,
+                            confidence=0.0,
+                            message=f"Disease prediction failed: {str(e)}",
+                            disease_details=None
+                        ))
+                except Exception as gemini_error:
+                    logger.error(f"Gemini fallback failed: {gemini_error}")
+                    results.append(ValidationResult(
+                        filename=file.filename,
+                        image="error",
+                        is_plant=f"True with confidence: {is_plant_confidence}",
+                        label=None,
+                        confidence=0.0,
+                        message=f"Disease prediction failed: {str(e)}",
+                        disease_details=None
+                    ))
                 continue
                 
-            # Append the results for this image
-            results.append(ValidationResult(
-                filename=file.filename,
-                image="processed",
-                is_plant=f"True with confidence: {is_plant_confidence}",
-                label=prediction_results.get('predicted_class', 'Unknown'),
-                confidence=prediction_results.get('confidence', 0.0),
-                message="Image is valid and classified successfully.",
-                disease_details=disease_details
-            ))
         os.makedirs(configs['INPUT_FILE_PATH'], exist_ok=True)
         return results
 
@@ -370,6 +511,233 @@ async def validate_and_classify_images(files: List[UploadFile] = File(..., descr
         logger.error(f"Unexpected error in validate_and_classify_images: {e}")
         raise HTTPException(status_code=500, detail=f"An error occurred: {e}")
 
+
+# Helper functions for Gemini integration
+async def classify_image_with_gemini(image_path: str) -> str:
+    """
+    Classify image using Gemini model.
+    
+    Args:
+        image_path (str): Path to the image file
+        
+    Returns:
+        str: JSON string with classification results
+    """
+    try:
+        # Initialize Gemini model (adjust based on your Gemini setup)
+        model = genai.GenerativeModel('gemini-2.0-flash-exp')
+        
+        # Read and prepare the image
+        with open(image_path, 'rb') as image_file:
+            image_data = image_file.read()
+        
+        # Prepare the image for Gemini
+        image = {
+            'mime_type': 'image/jpeg',  # or 'image/png' based on your image
+            'data': image_data
+        }
+        
+        # Get the prompt
+        prompt = get_disease_identification_prompt()
+        
+        # Generate response
+        response = model.generate_content([prompt, image])
+        
+        # Clean the response to ensure it's valid JSON
+        response_text = response.text.strip()
+        
+        # Remove any markdown formatting if present
+        if response_text.startswith('```json'):
+            response_text = response_text.replace('```json', '').replace('```', '').strip()
+        
+        return response_text
+        
+    except Exception as e:
+        logger.error(f"Error in Gemini classification: {e}")
+        return None
+
+
+async def get_disease_details_with_gemini(classification_result: dict) -> str:
+    """
+    Get detailed disease information using Gemini text model.
+    
+    Args:
+        classification_result (dict): The classification result from Gemini
+        
+    Returns:
+        str: Detailed disease information
+    """
+    try:
+        # Initialize Gemini model for text generation
+        model = genai.GenerativeModel('gemini-2.0-flash-exp')
+        
+        # Get the prompt for disease details
+        prompt = get_disease_details_prompt(classification_result)
+        
+        # Generate response
+        response = model.generate_content(prompt)
+        
+        return response.text.strip()
+        
+    except Exception as e:
+        logger.error(f"Error in Gemini disease details: {e}")
+        return "Unable to generate disease details at this time."
+
+
+@app.post("/chat/text", response_model=ChatResponse)
+async def chat_text_only(request: ChatMessage):
+    """Handle text-only chat messages"""
+    try:
+        # Create conversation history context
+        context = PLANT_DISEASE_SYSTEM_PROMPT + "\n\nConversation History:\n"
+        
+        for msg in request.conversation_history[-5:]:  # Last 5 messages for context
+            context += f"User: {msg.get('user', '')}\n"
+            context += f"Assistant: {msg.get('assistant', '')}\n"
+        
+        context += f"\nCurrent User Question: {request.message}\n"
+        context += "\nPlease provide a helpful response about plant care, disease diagnosis, or treatment:"
+        
+        # Generate response using Gemini
+        response = model.generate_content(context)
+        
+        # Generate conversation ID and timestamp
+        conversation_id = str(uuid.uuid4())
+        timestamp = datetime.datetime.now().isoformat()
+        
+        # Store conversation (in production, use database)
+        conversations[conversation_id] = {
+            "messages": request.conversation_history + [
+                {"user": request.message, "assistant": response.text}
+            ],
+            "timestamp": timestamp
+        }
+        
+        return ChatResponse(
+            response=response.text,
+            conversation_id=conversation_id,
+            timestamp=timestamp
+        )
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Chat processing error: {str(e)}")
+
+@app.post("/chat/image")
+async def chat_with_image(
+    message: str = Form(...),
+    image: UploadFile = File(...),
+    conversation_history: str = Form("[]")
+):
+    """Handle chat with image upload"""
+    try:
+        # Parse conversation history
+        try:
+            conv_history = json.loads(conversation_history)
+        except:
+            conv_history = []
+        
+        # Read and process image
+        image_bytes = await image.read()
+        pil_image = Image.open(io.BytesIO(image_bytes))
+        
+        # Convert to RGB if necessary
+        if pil_image.mode != 'RGB':
+            pil_image = pil_image.convert('RGB')
+        
+        # Create context with conversation history
+        context = PLANT_DISEASE_SYSTEM_PROMPT + "\n\nConversation History:\n"
+        
+        for msg in conv_history[-5:]:  # Last 5 messages for context
+            context += f"User: {msg.get('user', '')}\n"
+            context += f"Assistant: {msg.get('assistant', '')}\n"
+        
+        context += f"\nCurrent User Question: {message}\n"
+        context += """
+Please analyze the uploaded plant image and provide:
+1. Plant identification (if possible)
+2. Disease/problem diagnosis
+3. Severity assessment
+4. Detailed treatment recommendations
+5. Prevention strategies
+6. Expected recovery timeline
+
+Focus on practical, actionable advice that the user can implement immediately.
+"""
+        
+        # Generate response with image
+        response = model.generate_content([context, pil_image])
+        
+        # Generate conversation ID and timestamp
+        conversation_id = str(uuid.uuid4())
+        timestamp = datetime.datetime.now().isoformat()
+        
+        # Store conversation
+        conversations[conversation_id] = {
+            "messages": conv_history + [
+                {
+                    "user": message,
+                    "assistant": response.text,
+                    "has_image": True,
+                    "image_name": image.filename
+                }
+            ],
+            "timestamp": timestamp
+        }
+        
+        return {
+            "response": response.text,
+            "conversation_id": conversation_id,
+            "timestamp": timestamp,
+            "image_processed": True
+        }
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Image chat processing error: {str(e)}")
+
+@app.get("/chat/history/{conversation_id}")
+async def get_conversation_history(conversation_id: str):
+    """Retrieve conversation history"""
+    try:
+        if conversation_id not in conversations:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        
+        return conversations[conversation_id]
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving history: {str(e)}")
+
+@app.delete("/chat/history/{conversation_id}")
+async def clear_conversation_history(conversation_id: str):
+    """Clear specific conversation history"""
+    try:
+        if conversation_id in conversations:
+            del conversations[conversation_id]
+            return {"message": "Conversation history cleared successfully"}
+        else:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error clearing history: {str(e)}")
+
+@app.get("/chat/health")
+async def chat_health_check():
+    """Health check for chat functionality"""
+    try:
+        # Test Gemini connection
+        test_response = model.generate_content("Hello, this is a test message for plant care.")
+        return {
+            "status": "healthy",
+            "gemini_connection": "active",
+            "active_conversations": len(conversations),
+            "test_response_length": len(test_response.text)
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "gemini_connection": "failed"
+        }
+    
 @app.get("/health/", summary="Check API health")
 async def health_check():
     """
