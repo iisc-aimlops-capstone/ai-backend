@@ -37,8 +37,8 @@ from PIL import Image
 
 # Load environment variables
 # Uncomment the following line if you are using a .env file 
-from dotenv import load_dotenv
-load_dotenv()
+#from dotenv import load_dotenv
+#load_dotenv()
 
 # --- Dependency Injection for Translator ---
 # This makes your app easier to test and manage.
@@ -46,7 +46,7 @@ def get_translator():
     return Translator()
 
 # Set the OpenAI API in Environment
-# openai.api_key = os.environ.get("OPENAI_API_KEY")
+openai.api_key = os.environ.get("OPENAI_API_KEY")
 
 # Configure Gemini
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -216,6 +216,7 @@ conversations = {}
 async def analyze_image_from_s3(request: S3ImageRequest):
     """
     Download an image from S3 and analyze it for plant disease detection.
+    Enhanced with comprehensive error handling, Gemini fallback, and RAG integration.
     
     Args:
         request (S3ImageRequest): Request containing S3 file key
@@ -223,7 +224,10 @@ async def analyze_image_from_s3(request: S3ImageRequest):
     Returns:
         ValidationResult: Analysis results for the image
     """
-    disease_details=None
+    disease_details = None
+    temp_file_path = None
+    local_file_path = None
+    
     try:
         logger.info(f"Processing image: {request.file_key} from bucket: {S3_BUCKET_NAME}")
         
@@ -239,8 +243,12 @@ async def analyze_image_from_s3(request: S3ImageRequest):
                     detail=f"Failed to download image {request.file_key} from S3 bucket {S3_BUCKET_NAME}"
                 )
             
+            # Ensure input directory exists
+            if not os.path.exists(os.path.join(parent, configs['INPUT_FILE_PATH'])):
+                os.makedirs(os.path.join(parent, configs['INPUT_FILE_PATH']))
+            
             # Copy the downloaded file to the input directory for processing
-            local_file_path = os.path.join(configs['INPUT_FILE_PATH'], request.file_key)
+            local_file_path = os.path.join(parent, configs['INPUT_FILE_PATH'], request.file_key)
             
             # Copy temp file to input directory
             import shutil
@@ -254,9 +262,28 @@ async def analyze_image_from_s3(request: S3ImageRequest):
                 logger.info(f"Plant validation result: {is_plant}, confidence: {is_plant_confidence}")
             except Exception as e:
                 logger.error(f"Error in plant validation: {e}")
-                raise HTTPException(status_code=500, detail=f"Plant validation failed: {str(e)}")
+                return ValidationResult(
+                    filename=request.file_key,
+                    image="error",
+                    is_plant="False",
+                    label=None,
+                    confidence=None,
+                    message="Image validation failed. The uploaded image does not appear to contain a plant.",
+                    disease_details=None
+                )
             
             if not is_plant:
+                # Clean up image path if validation failed
+                if img_path:
+                    if os.path.isfile(img_path):
+                        os.remove(img_path)
+                    elif os.path.isdir(img_path):
+                        # Only remove files inside, not the folder itself
+                        for f in os.listdir(img_path):
+                            file_path = os.path.join(img_path, f)
+                            if os.path.isfile(file_path):
+                                os.remove(file_path)
+                
                 return ValidationResult(
                     filename=request.file_key,
                     image="processed",
@@ -271,41 +298,127 @@ async def analyze_image_from_s3(request: S3ImageRequest):
             try:
                 prediction_results = predict_disease()
                 logger.info(f"Disease prediction results: {prediction_results}")
+                
+                # Check if plant is healthy
+                if 'healthy' in prediction_results['predicted_class'].lower():
+                    return ValidationResult(
+                        filename=request.file_key,
+                        image="processed",
+                        is_plant=f"True with confidence: {is_plant_confidence}",
+                        label=prediction_results.get('predicted_class', 'None'),
+                        confidence=prediction_results.get('confidence', 0.0),
+                        message="Plant is Healthy. No additional information is needed.",
+                        disease_details="Healthy Plant"
+                    )
+                
+                # Get disease details using RAG
                 rag_retreival = RagApp()
                 question = f"Provide all information about the disease {prediction_results['predicted_class']}"
                 disease_details = rag_retreival.run(question)
                 logger.info(disease_details)
                 
                 if 'generation' not in disease_details:
-                    logger.info("No response generated")
+                    logger.info("Disease information not found.")
+                    logger.info("No response generated from custom model, trying Gemini fallback")
+                    
+                    # Gemini fallback integration
+                    try:
+                        # Get disease details from Gemini
+                        gemini_disease_details = await get_disease_details_with_gemini(prediction_results.get('predicted_class', 'None'))
+
+                        return ValidationResult(
+                            filename=request.file_key,
+                            image="processed",
+                            is_plant=f"True with confidence: {is_plant_confidence}",
+                            label=prediction_results.get('predicted_class', 'None'),
+                            confidence=prediction_results.get('confidence', 0.0),
+                            message="Image is valid and classified successfully, [Results generated from Gemini-2.5-flash as disease information not found in DB].",
+                            disease_details=gemini_disease_details
+                        )
+                    except Exception as gemini_error:
+                        logger.error(f"Gemini fallback failed: {gemini_error}")
+                        return ValidationResult(
+                            filename=request.file_key,
+                            image="error",
+                            is_plant=f"True with confidence: {is_plant_confidence}",
+                            label=prediction_results.get('predicted_class', 'None'),
+                            confidence=prediction_results.get('confidence', 0.0),
+                            message=f"Disease prediction failed: Custom model failed, Gemini fallback error: {str(gemini_error)}",
+                            disease_details=None
+                        )
                 else:
+                    # Custom model succeeded
                     disease_details = disease_details["generation"]
+                    return ValidationResult(
+                        filename=request.file_key,
+                        image="processed",
+                        is_plant=f"True with confidence: {is_plant_confidence}",
+                        label=prediction_results.get('predicted_class', 'Unknown'),
+                        confidence=prediction_results.get('confidence', 0.0),
+                        message="Image is valid and classified successfully.",
+                        disease_details=disease_details
+                    )
+                    
             except Exception as e:
                 logger.error(f"Error in disease prediction: {e}")
-                raise HTTPException(status_code=500, detail=f"Disease prediction failed: {str(e)}")
-            
-            return ValidationResult(
-                filename=request.file_key,
-                image="processed",
-                is_plant=f"True with confidence: {is_plant_confidence}",
-                label=prediction_results.get('predicted_class', 'Unknown'),
-                confidence=prediction_results.get('confidence', 0.0),
-                message="Image is valid and classified successfully.",
-                disease_details=disease_details
-            )
+                
+                # Try Gemini as fallback when custom model fails completely
+                try:
+                    logger.info("Custom model failed completely, trying Gemini fallback")
+                    gemini_classification = await classify_image_with_gemini(local_file_path)
+                    
+                    if gemini_classification:
+                        gemini_result = json.loads(gemini_classification)
+                        gemini_disease_details = await get_disease_details_with_gemini(gemini_result)
+                        
+                        return ValidationResult(
+                            filename=request.file_key,
+                            image="processed",
+                            is_plant=gemini_result.get('is_plant', f"True with confidence: {is_plant_confidence}"),
+                            label=gemini_result.get('label', 'Unknown'),
+                            confidence=gemini_result.get('confidence', 0.0),
+                            message=gemini_result.get('message', "[Results generated from Gemini-2.5-flash] Image is valid and classified successfully."),
+                            disease_details=gemini_disease_details
+                        )
+                    else:
+                        return ValidationResult(
+                            filename=request.file_key,
+                            image="error",
+                            is_plant=f"True with confidence: {is_plant_confidence}",
+                            label=None,
+                            confidence=0.0,
+                            message=f"Disease prediction failed: {str(e)}",
+                            disease_details=None
+                        )
+                except Exception as gemini_error:
+                    logger.error(f"Gemini fallback failed: {gemini_error}")
+                    return ValidationResult(
+                        filename=request.file_key,
+                        image="error",
+                        is_plant=f"True with confidence: {is_plant_confidence}",
+                        label=None,
+                        confidence=0.0,
+                        message=f"Disease prediction failed: {str(e)}",
+                        disease_details=None
+                    )
             
         finally:
             # Clean up temporary files
             try:
-                if os.path.exists(temp_file_path):
+                if temp_file_path and os.path.exists(temp_file_path):
                     os.unlink(temp_file_path)
                 # Optionally clean up the local file as well
-                if os.path.exists(local_file_path):
+                if local_file_path and os.path.exists(local_file_path):
                     os.remove(local_file_path)
             except Exception as e:
                 logger.warning(f"Failed to clean up temporary files: {e}")
+            
             # Delete from S3 after processing
-            delete_from_s3(S3_BUCKET_NAME, request.file_key)
+            try:
+                delete_from_s3(S3_BUCKET_NAME, request.file_key)
+            except Exception as e:
+                logger.warning(f"Failed to delete from S3: {e}")
+            
             # Ensure pred folder exists after cleanup
             os.makedirs(configs['INPUT_FILE_PATH'], exist_ok=True)
                 
@@ -315,6 +428,78 @@ async def analyze_image_from_s3(request: S3ImageRequest):
     except Exception as e:
         logger.error(f"Unexpected error in analyze_image_from_s3: {e}")
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+
+# Helper functions for Gemini integration (if not already present)
+async def classify_image_with_gemini(image_path: str) -> str:
+    """
+    Classify image using Gemini model.
+    
+    Args:
+        image_path (str): Path to the image file
+        
+    Returns:
+        str: JSON string with classification results
+    """
+    try:
+        # Initialize Gemini model (adjust based on your Gemini setup)
+        model = genai.GenerativeModel('gemini-2.0-flash-exp')
+        
+        # Read and prepare the image
+        with open(image_path, 'rb') as image_file:
+            image_data = image_file.read()
+        
+        # Prepare the image for Gemini
+        image = {
+            'mime_type': 'image/jpeg',  # or 'image/png' based on your image
+            'data': image_data
+        }
+        
+        # Get the prompt
+        prompt = get_disease_identification_prompt()
+        
+        # Generate response
+        response = gemini_model.generate_content([prompt, image])
+        
+        # Clean the response to ensure it's valid JSON
+        response_text = response.text.strip()
+        
+        # Remove any markdown formatting if present
+        if response_text.startswith('```json'):
+            response_text = response_text.replace('```json', '').replace('```', '').strip()
+        
+        return response_text
+        
+    except Exception as e:
+        logger.error(f"Error in Gemini classification: {e}")
+        return None
+
+
+async def get_disease_details_with_gemini(disease_name) -> str:
+    """
+    Get detailed disease information using Gemini text model.
+    
+    Args:
+        disease_name (str): The name of the disease
+        
+    Returns:
+        str: Detailed disease information
+    """
+    try:
+        # Initialize Gemini model for text generation
+        # model = genai.GenerativeModel("gemini-2.5-flash")
+        
+        # Get the prompt for disease details
+        prompt = get_disease_details_prompt(disease_name)
+        
+        # Generate response
+        response = gemini_model.generate_content([prompt])
+        
+        return response.text.strip()
+        
+    except Exception as e:
+        logger.error(f"Error in Gemini disease details: {e}")
+        return "Unable to generate disease details at this time."
 
 @app.post("/validate_and_classify/", response_model=List[ValidationResult], summary="Validate images (original endpoint)")
 async def validate_and_classify_images(files: List[UploadFile] = File(..., description="List of image files to validate")):
